@@ -4,12 +4,15 @@ class Pixel (scene.Rect):
 	def __init__(self, x, y, w, h):
 		scene.Rect.__init__(self, x, y, w, h)
 		self.colors = [tuple((0, 0, 0, 0))]
+		self.removed = False 
 		
 	def used(self):
 		return len(self.colors) > 1
 		
 	def undo(self):
-		if self.used():
+		if self.removed:
+			self.removed = False 
+		elif self.used():
 			self.colors.pop()
 			
 	def reset(self):
@@ -68,6 +71,8 @@ class PixelEditor(ui.View):
 		path = ui.Path.rect(*self.frame)
 		with ui.ImageContext(self.width, self.height) as ctx:
 			for pixel in self.pixel_path:
+				if pixel.removed:
+					continue 
 				ui.set_color(pixel.colors[-1])
 				pixel_path = ui.Path.rect(*pixel)
 				pixel_path.line_width = 0.5
@@ -108,11 +113,9 @@ class PixelEditor(ui.View):
 				self.set_image(ctx.get_image())
 
 	def eraser(self, pixel):
-		if pixel.used():
-			self.pixel_path.remove(pixel)
-			pixel.reset()
-			if pixel in self.pixel_path:
-				self.eraser(pixel)
+		if pixel.used() and not pixel.removed:
+			pixel.removed = True 
+			self.pixel_path.append(pixel)
 		img = self.create_image_from_history()
 		self.set_image(self.create_image_from_history())
 
