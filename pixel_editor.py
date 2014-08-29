@@ -106,7 +106,6 @@ class PixelEditor(ui.View):
         if pixel.used:
             self.used_pixels.remove(pixel)
             pixel.reset()
-        img = self.create_image_from_history()
         self.set_image(self.create_image_from_history())
 
     def color_picker(self, pixel):
