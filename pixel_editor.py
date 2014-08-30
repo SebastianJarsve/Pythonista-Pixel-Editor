@@ -1,4 +1,4 @@
-import console, Image, numpy, photos, scene, ui
+import console, Image, numpy, photos, scene, ui, clipboard
 
 class Pixel (scene.Rect):
 	def __init__(self, x, y, w, h):
@@ -6,8 +6,11 @@ class Pixel (scene.Rect):
 		self.colors = [tuple((0, 0, 0, 0))]
 		self.removed = False 
 		
+	def use(self):
+		self.removed = False 
+		
 	def used(self):
-		return len(self.colors) > 1
+		return len(self.colors) > 1 and not self.removed
 		
 	def undo(self):
 		if self.removed:
@@ -97,7 +100,8 @@ class PixelEditor(ui.View):
 		self.set_image(self.create_image_from_history())
 
 	def pencil(self, pixel):
-		if pixel.colors[-1] != self.current_color:
+		if pixel.colors[-1] != self.current_color or not pixel.used():
+			pixel.use()
 			pixel.colors.append(self.current_color)
 			self.pixel_path.append(pixel)
 			old_img = self.image_view.image
@@ -143,7 +147,7 @@ class ColorView (ui.View):
 
 	def init_action(self, subview):
 		if hasattr(subview, 'action'):
-			subview.action = self.choose_color
+			subview.action = self.choose_color if subview.name != 'clear' else self.clear_user_palette
 		if hasattr(subview, 'subviews'):
 			for sv in subview.subviews:
 				self.init_action(sv)
@@ -164,10 +168,16 @@ class ColorView (ui.View):
 			self.color[sender.name] = sender.value
 			self.set_color()
 		elif sender in self['palette'].subviews:
+			if sender.background_color == (0, 0, 0, 0):
+				sender.background_color = self.get_color()
 			self.set_color(sender.background_color)
 			color = {k:self.get_color()[i] for i, k in enumerate('rgba')}
 			for i in 'rgba':
 				self[i].value = color[i]
+				
+	def clear_user_palette(self, sender):
+		for sv in self['palette'].subviews[10:]:
+			sv.background_color = (0, 0, 0, 0)
 
 class ToolbarView (ui.View):
 	def did_load(self):
@@ -188,7 +198,18 @@ class ToolbarView (ui.View):
 		if sender.name == 'bits':
 			row, column = eval(sender.text)
 			self.superview['editor'].reset(row, column)
-
+			
+	@ui.in_background
+	def save_to_cameraroll(self, image):
+		photos.save_image(image)
+		console.hud_alert('Saved to Camera Roll')
+		
+	@ui.in_background
+	def save_to_current_folder(self, image):
+		with open(console.input_alert('File Name')+'.png', 'w+') as f:
+			f.write(image.read())
+		console.hud_alert('Saved to Current Folder')
+			
 	@ui.in_background
 	def button_tapped(self, sender):
 		pixel_editor = self.superview['editor']
@@ -197,9 +218,13 @@ class ToolbarView (ui.View):
 			if console.alert('Trash', msg, 'Yes'):
 				pixel_editor.image_view.image = pixel_editor.reset()
 		elif sender.name == 'save':
-			if console.alert('Save Image', 'Save image to cameraroll?', 'Yes'):
+			option = console.alert('Save Image', 'Saving options', 'Camera Roll', 'Clipboard')
+			if option == 1:
 				photos.save_image(pixel_editor.image_view.image)
 				console.hud_alert('Saved to cameraroll')
+			elif option == 2:
+				clipboard.set_image(pixel_editor.image_view.image, format='png')
+				console.hud_alert('Copied')
 		elif sender.name == 'undo':
 			pixel_editor.undo()
 		elif sender.name == 'preview':
