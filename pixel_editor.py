@@ -1,25 +1,36 @@
-import console, Image, numpy, photos, scene, ui, clipboard
+
+import console, scene, photos, clipboard, ui, io, os.path, Image, numpy
+
+def pil_to_ui(img):
+	with io.BytesIO() as bIO:
+		img.save(bIO, 'png')
+		return ui.Image.from_data(bIO.getvalue())
+	
+def ui_to_pil(img):
+	return Image.open(io.BytesIO(img.to_png()))
+	
+def crop_image(image):
+	image = ui_to_pil(image)
+	image_data = numpy.asarray(image)
+	image_data_bw = image_data.max(axis=2)
+	non_empty_columns = numpy.where(image_data_bw.max(axis=0)>0)[0]
+	non_empty_rows = numpy.where(image_data_bw.max(axis=1)>0)[0]
+	cropBox = (min(non_empty_rows), max(non_empty_rows), min(non_empty_columns), max(non_empty_columns))
+	image_data_new = image_data[cropBox[0]:cropBox[1]+1, cropBox[2]:cropBox[3]+1 , :]
+	new_image = pil_to_ui(Image.fromarray(image_data_new))
+	return new_image
 
 class Pixel (scene.Rect):
 	def __init__(self, x, y, w, h):
 		scene.Rect.__init__(self, x, y, w, h)
-		self.colors = [tuple((0, 0, 0, 0))]
-		self.removed = False 
-		
-	def use(self):
-		self.removed = False 
+		self.colors = [(0, 0, 0, 0)]
 		
 	def used(self):
-		return len(self.colors) > 1 and not self.removed
+		return len(self.colors) > 1 or self.colors[-1] != (0, 0, 0, 0)
 		
 	def undo(self):
-		if self.removed:
-			self.removed = False 
-		elif self.used():
+		if self.used():
 			self.colors.pop()
-			
-	def reset(self):
-		self.colors = [tuple((0, 0, 0, 0))]
 
 class PixelEditor(ui.View):
 	def did_load(self):
@@ -30,10 +41,23 @@ class PixelEditor(ui.View):
 		self.grid_layout = self.create_grid_layout()
 		self.current_color = (1, 1, 1, 1)
 		self.mode = 'pencil'
+		self.auto_crop_image = False 
+		
+	def has_image(self):
+		if self.pixel_path:
+			if [p for p in self.pixel_path if p.used()]:
+				return True 
+		return False 
 
 	def set_image(self, image=None):
 		image = image or self.create_new_image()
 		self.image_view.image = self.superview['preview'].image = image
+		
+	def get_image(self):
+		image = self.image_view.image
+		if self.auto_crop_image:
+			return crop_image(image)
+		return image
 
 	def create_grid_image(self):
 		s = self.width/self.row if self.row > self.column else self.height/self.column
@@ -74,7 +98,7 @@ class PixelEditor(ui.View):
 		path = ui.Path.rect(*self.frame)
 		with ui.ImageContext(self.width, self.height) as ctx:
 			for pixel in self.pixel_path:
-				if pixel.removed:
+				if not pixel.used():
 					continue 
 				ui.set_color(pixel.colors[-1])
 				pixel_path = ui.Path.rect(*pixel)
@@ -93,32 +117,31 @@ class PixelEditor(ui.View):
 		self.set_image()
 
 	def undo(self):
-		if not self.pixel_path:
-			return
-		pixel = self.pixel_path.pop()
-		pixel.undo()
-		self.set_image(self.create_image_from_history())
+		if self.pixel_path:
+			pixel = self.pixel_path.pop()
+			pixel.undo()
+			self.set_image(self.create_image_from_history())
 
 	def pencil(self, pixel):
-		if pixel.colors[-1] != self.current_color or not pixel.used():
-			pixel.use()
-			pixel.colors.append(self.current_color)
-			self.pixel_path.append(pixel)
-			old_img = self.image_view.image
-			path = ui.Path.rect(*pixel)
-			with ui.ImageContext(self.width, self.height) as ctx:
-				if old_img:
-					old_img.draw()
-				ui.set_color(self.current_color)
-				pixel_path = ui.Path.rect(*pixel)
-				pixel_path.line_width = 0.5
-				pixel_path.fill()
-				pixel_path.stroke()
-				self.set_image(ctx.get_image())
+		if pixel.colors[-1] != self.current_color:
+			if self.current_color != (0, 0, 0, 0):
+				pixel.colors.append(self.current_color)
+				self.pixel_path.append(pixel)
+				old_img = self.image_view.image
+				path = ui.Path.rect(*pixel)
+				with ui.ImageContext(self.width, self.height) as ctx:
+					if old_img:
+						old_img.draw()
+					ui.set_color(self.current_color)
+					pixel_path = ui.Path.rect(*pixel)
+					pixel_path.line_width = 0.5
+					pixel_path.fill()
+					pixel_path.stroke()
+					self.set_image(ctx.get_image())
 
 	def eraser(self, pixel):
-		if pixel.used() and not pixel.removed:
-			pixel.removed = True 
+		if pixel.used() and self.pixel_path[-1] != pixel:
+			pixel.colors.append((0, 0, 0, 0))
 			self.pixel_path.append(pixel)
 		img = self.create_image_from_history()
 		self.set_image(self.create_image_from_history())
@@ -141,7 +164,7 @@ class PixelEditor(ui.View):
 
 class ColorView (ui.View):
 	def did_load(self):
-		self.color = {'r':1, 'g':1, 'b':1, 'a':1}
+		self.color = {'r':0, 'g':0, 'b':0, 'a':1}
 		for subview in self.subviews:
 			self.init_action(subview)
 
@@ -176,65 +199,90 @@ class ColorView (ui.View):
 				self[i].value = color[i]
 				
 	def clear_user_palette(self, sender):
-		for sv in self['palette'].subviews[10:]:
+		for sv in self['palette'].subviews[11:]:
 			sv.background_color = (0, 0, 0, 0)
 
 class ToolbarView (ui.View):
 	def did_load(self):
+		self.pixel_editor = self.superview['editor']
 		for subview in self.subviews:
 			self.init_actions(subview)
 
 	def init_actions(self, subview):
 		if hasattr(subview, 'action'):
-			if isinstance(subview, ui.Button):
-				subview.action = self.button_tapped
-			elif isinstance(subview, ui.TextField):
-				subview.action = self.textfield_action
+			if hasattr(self, subview.name):
+				subview.action = eval('self.{}'.format(subview.name))
+			else: 
+				subview.action = self.set_mode
 		if hasattr(subview, 'subviews'):
 			for sv in subview.subviews:
 				self.init_actions(sv)
-
-	def textfield_action(self, sender):
-		if sender.name == 'bits':
-			row, column = eval(sender.text)
-			self.superview['editor'].reset(row, column)
-			
-	@ui.in_background
-	def save_to_cameraroll(self, image):
-		photos.save_image(image)
-		console.hud_alert('Saved to Camera Roll')
+				
+	def show_error(self):
+		console.hud_alert('Editor has no image', 'error', 0.8)
 		
-	@ui.in_background
-	def save_to_current_folder(self, image):
-		with open(console.input_alert('File Name')+'.png', 'w+') as f:
-			f.write(image.read())
-		console.hud_alert('Saved to Current Folder')
-			
-	@ui.in_background
-	def button_tapped(self, sender):
-		pixel_editor = self.superview['editor']
-		if sender.name == 'trash':
+	@ui.in_background		
+	def trash(self, sender):
+		if self.pixel_editor.has_image():
 			msg = 'Are you sure you want to clear the pixel editor? Image will not be saved.'
 			if console.alert('Trash', msg, 'Yes'):
-				pixel_editor.image_view.image = pixel_editor.reset()
-		elif sender.name == 'save':
-			option = console.alert('Save Image', 'Saving options', 'Camera Roll', 'Clipboard')
+				self.pixel_editor.reset()
+		else: 
+			self.show_error()
+			
+	@ui.in_background
+	def save(self, sender):
+		if self.pixel_editor.has_image():
+			image = self.pixel_editor.get_image()
+			option = console.alert('Save Image', '', 'Camera Roll', 'New File', 'Copy image')
 			if option == 1:
-				photos.save_image(pixel_editor.image_view.image)
+				photos.save_image(image)
 				console.hud_alert('Saved to cameraroll')
 			elif option == 2:
-				clipboard.set_image(pixel_editor.image_view.image, format='png')
+				name = 'image_{}.png'
+				get_num = lambda x=1: get_num(x+1) if os.path.isfile(name.format(x)) else x
+				file_name = name.format(get_num())
+				with open(file_name, 'w') as f:
+					ui_to_pil(image).save(f, 'png')
+				console.hud_alert('Image saved as "{}"'.format(file_name))
+			elif option == 3:
+				clipboard.set_image(image, format='png')
 				console.hud_alert('Copied')
-		elif sender.name == 'undo':
-			pixel_editor.undo()
-		elif sender.name == 'preview':
-			v = ui.ImageView(frame=(0,0,512,512))
-			v.image = pixel_editor.image_view.image
-			v.present('sheet')
-		else:
-			pixel_editor.mode = sender.name
-			for b in self['tools'].subviews:
-				b.background_color = tuple((0, 0, 0, 0))
+		else: 
+			self.show_error()
+			
+	def undo(self, sender):
+		self.pixel_editor.undo()
+				
+	@ui.in_background
+	def preview(self, sender):
+		if self.pixel_editor.has_image():
+			v = ui.ImageView(frame=(100, 400,512,512))
+			v.image = self.pixel_editor.get_image()
+			v.width, v.height = v.image.size
+			v.present('popover', popover_location=(200, 275), hide_title_bar=True)
+		else: 
+			self.show_error()
+			
+	def crop(self, sender):
+		if not self.pixel_editor.auto_crop_image:
 			sender.background_color = '#4C4C4C'
+			sender.tint_color = 'white'
+			self.pixel_editor.auto_crop_image = True
+		else: 
+			sender.background_color = (0, 0, 0, 0)
+			sender.tint_color = 'black'
+			self.pixel_editor.auto_crop_image = False 
 
-ui.load_view('pixel_editor').present()
+	def bits(self, sender):
+		row, column = eval(sender.text)
+		self.superview['editor'].reset(row, column)
+		
+	def set_mode(self, sender):
+		self.pixel_editor.mode = sender.name
+		for b in self['tools'].subviews:
+			b.background_color = tuple((0, 0, 0, 0))
+		sender.background_color = '#4C4C4C'
+
+
+ui.load_view('pixel_editor').present(orientations=['portrait'])
