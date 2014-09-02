@@ -26,10 +26,10 @@ class Pixel (scene.Rect):
 		self.colors = [(0, 0, 0, 0)]
 		
 	def used(self):
-		return len(self.colors) > 1 or self.colors[-1] != (0, 0, 0, 0)
+		return len(self.colors) > 1 and self.colors[-1] != (0, 0, 0, 0)
 		
 	def undo(self):
-		if self.used():
+		if len(self.colors) > 1:
 			self.colors.pop()
 
 class PixelEditor(ui.View):
@@ -39,7 +39,7 @@ class PixelEditor(ui.View):
 		self.pixel_path = []
 		self.image_view = self.create_image_view()
 		self.grid_layout = self.create_grid_layout()
-		self.current_color = (1, 1, 1, 1)
+		self.current_color = (0, 0, 0, 1)
 		self.mode = 'pencil'
 		self.auto_crop_image = False 
 		
@@ -58,6 +58,9 @@ class PixelEditor(ui.View):
 		if self.auto_crop_image:
 			return crop_image(image)
 		return image
+		
+	def add_history(self, pixel):
+		self.pixel_path.append(pixel)
 
 	def create_grid_image(self):
 		s = self.width/self.row if self.row > self.column else self.height/self.column
@@ -140,11 +143,11 @@ class PixelEditor(ui.View):
 					self.set_image(ctx.get_image())
 
 	def eraser(self, pixel):
-		if pixel.used() and self.pixel_path[-1] != pixel:
+		if pixel.used():
 			pixel.colors.append((0, 0, 0, 0))
 			self.pixel_path.append(pixel)
-		img = self.create_image_from_history()
-		self.set_image(self.create_image_from_history())
+			img = self.create_image_from_history()
+			self.set_image(self.create_image_from_history())
 
 	def color_picker(self, pixel):
 		self.current_color = pixel.colors[-1]
@@ -183,24 +186,26 @@ class ColorView (ui.View):
 		for i, v in enumerate('rgba'):
 			self[v].value = color[i]
 			self.color[v] = color[i]
+		rgb_to_hex = tuple(int(i*255) for i in color[:3])
+		self['color_input'].text = ''.join('#{:02X}{:02X}{:02X}'.format(*rgb_to_hex))
 		self['current_color'].background_color = color
 		self.superview['editor'].current_color = color
 
+	@ui.in_background
 	def choose_color(self, sender):
 		if sender.name in self.color:
 			self.color[sender.name] = sender.value
 			self.set_color()
 		elif sender in self['palette'].subviews:
-			if sender.background_color == (0, 0, 0, 0):
-				sender.background_color = self.get_color()
 			self.set_color(sender.background_color)
-			color = {k:self.get_color()[i] for i, k in enumerate('rgba')}
-			for i in 'rgba':
-				self[i].value = color[i]
-				
-	def clear_user_palette(self, sender):
-		for sv in self['palette'].subviews[11:]:
-			sv.background_color = (0, 0, 0, 0)
+		elif sender.name == 'color_input':
+			try: 
+				c = sender.text if sender.text.startswith('#') else eval(sender.text)
+				v = ui.View(background_color=c)
+				self['color_input'].text = str(v.background_color)
+				self.set_color(v.background_color)
+			except Exception as e:
+				console.hud_alert('Invalid Color', 'error')
 
 class ToolbarView (ui.View):
 	def did_load(self):
@@ -257,7 +262,7 @@ class ToolbarView (ui.View):
 	@ui.in_background
 	def preview(self, sender):
 		if self.pixel_editor.has_image():
-			v = ui.ImageView(frame=(100, 400,512,512))
+			v = ui.ImageView(frame=(100,400,512,512))
 			v.image = self.pixel_editor.get_image()
 			v.width, v.height = v.image.size
 			v.present('popover', popover_location=(200, 275), hide_title_bar=True)
@@ -274,9 +279,18 @@ class ToolbarView (ui.View):
 			sender.tint_color = 'black'
 			self.pixel_editor.auto_crop_image = False 
 
-	def bits(self, sender):
-		row, column = eval(sender.text)
-		self.superview['editor'].reset(row, column)
+	@ui.in_background
+	def pixels(self, sender):
+		if self.pixel_editor.has_image():
+			console.hud_alert("Can't chage size while editing.", "error")
+			return 
+		try: 
+			size = eval(sender.text)
+			row, column = (size if isinstance(size, tuple) else (size, size))
+			self.pixel_editor.reset(row, column)
+			self['pixels'].text = '{},{}'.format(row, column)
+		except Exception as e:
+			console.hud_alert('Invalid size', 'error', 0.8)
 		
 	def set_mode(self, sender):
 		self.pixel_editor.mode = sender.name
